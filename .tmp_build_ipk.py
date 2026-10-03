@@ -28,12 +28,12 @@ def add_tree(tf, src_base, map_to, arc_prefix):
 
 shutil.rmtree(BUILD, ignore_errors=True)
 os.makedirs(os.path.join(BUILD, 'control'))
-os.makedirs(DIST)
+os.makedirs(DIST, exist_ok=True)
 
-# ---- data.tar.gz ----
+# ---- data.tar.gz（GNU 格式：opkg/busybox 不认 python 默认的 PAX 头）----
 data_tgz = os.path.join(BUILD, 'data.tar.gz')
-with tarfile.open(data_tgz, 'w:gz') as tf:
-    add_tree(tf, os.path.join(ROOT, 'htdocs'), 'www/luci-static/quickstart/', '')
+with tarfile.open(data_tgz, 'w:gz', format=tarfile.GNU_FORMAT) as tf:
+    add_tree(tf, os.path.join(ROOT, 'htdocs'), 'www/', '')
     add_tree(tf, os.path.join(ROOT, 'luasrc'), 'usr/lib/lua/luci/', '')
     add_tree(tf, os.path.join(ROOT, 'root'), '', '')
 
@@ -51,27 +51,21 @@ control = (
 ctrl_path = os.path.join(BUILD, 'control', 'control')
 io.open(ctrl_path, 'w', newline='\n').write(control)
 ctrl_tgz = os.path.join(BUILD, 'control.tar.gz')
-with tarfile.open(ctrl_tgz, 'w:gz') as tf:
+with tarfile.open(ctrl_tgz, 'w:gz', format=tarfile.GNU_FORMAT) as tf:
     tf.add(ctrl_path, arcname='./control')
 
-# ---- ar 归档 ----
-def ar_entry(name, data):
-    hdr = name.ljust(16).encode()          # 名称
-    hdr += str(MTIME).ljust(12).encode()   # mtime
-    hdr += '0'.ljust(6).encode()           # uid
-    hdr += '0'.ljust(6).encode()           # gid
-    hdr += '100644'.ljust(8).encode()      # mode
-    hdr += str(len(data)).ljust(10).encode()  # size
-    hdr += b'\x60\n'                       # magic
-    if len(data) % 2:
-        data += b'\n'
-    return hdr + data
-
+# ---- 外层：新版 ipk = gzip tar{ ./debian-binary, ./data.tar.gz, ./control.tar.gz } ----
 ipk_path = os.path.join(DIST, '%s_%s_%s.ipk' % (PKG, VER, ARCH))
-with io.open(ipk_path, 'wb') as out:
-    out.write(b'!<arch>\n')
-    out.write(ar_entry('debian-binary', b'2.0\n'))
-    with io.open(ctrl_tgz, 'rb') as f: out.write(ar_entry('control.tar.gz', f.read()))
-    with io.open(data_tgz, 'rb') as f: out.write(ar_entry('data.tar.gz', f.read()))
+with tarfile.open(ipk_path, 'w:gz', format=tarfile.GNU_FORMAT) as outer:
+    for name, path in [('debian-binary', None), ('data.tar.gz', data_tgz), ('control.tar.gz', ctrl_tgz)]:
+        if name == 'debian-binary':
+            payload = b'2.0\n'
+            ti = tarfile.TarInfo('./' + name)
+            ti.size = len(payload)
+            ti.mtime = MTIME; ti.uid = ti.gid = 0; ti.uname = ti.gname = 'root'; ti.mode = 0o644
+            import io as _io
+            outer.addfile(ti, _io.BytesIO(payload))
+        else:
+            outer.add(path, arcname='./' + name)
 
 print('ipk 已生成:', ipk_path, os.path.getsize(ipk_path), 'bytes')
